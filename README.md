@@ -193,6 +193,27 @@ There is no threshold: a single repetition with differing values fails. Use `sel
 when you want to allow a number of queries instead. When `forTables` is set, only queries against
 those tables are considered.
 
+**What this rule also catches.** The rule is "same SELECT shape, different parameter values", and
+some test styles produce that without an N+1 being present. Running the check across four public
+test suites, 38 of the 83 reported query shapes were of that kind. Which ones you see depends far
+more on how the suite is written than on the code under test: one suite reported 4 out of 46, and
+another reported all of its 25.
+
+| Test style | What the report looks like | Example |
+|---|---|---|
+| One test asserts a match and a miss | The finder runs twice with different arguments | `findByLastName("Davis")` then `findByLastName("Daviss")` |
+| One test walks through pages | The same query runs with the next cursor or offset | reading page 1, then page 2 |
+| One test drives a lifecycle | Create, update and delete each re-read the same row by id | `register(...)` called three times in a row |
+
+None of these can be separated from a real N+1 by the number of repetitions. A genuine lazy-load
+N+1 can run only twice when the test touches two parents, and a repeated finder call can run seven
+times. Read the reported SQL and parameters before changing code: a real N+1 takes its parameters
+from the rows of the query that ran just before it, while the cases above take them from the test.
+
+`noNPlusOne()` applies to one test you chose, so this is mostly a concern for the suite-wide
+`query-counter.n-plus-one.enabled`. It only warns until `query-counter.n-plus-one.fail` is set, so
+turn `fail` on after you have looked through what the warnings say.
+
 ### Examples
 
 Each example below is a real test in

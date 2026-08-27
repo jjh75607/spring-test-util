@@ -16,6 +16,11 @@ Maven Central 로 배포한다.
   기본값이 꺼짐이다. 항상 켜져 있으면 테스트가 많은 프로젝트에서 로그가 오염된다
 - 자동 설정에서 `@ComponentScan`을 쓰지 않는다. 사용자의 스캔과 겹치고 순서에 따라
   결과가 달라진다. `@Bean`으로 명시한다
+- **프록시가 DataSource 의 예외 타입을 바꾸지 않는다.** `Method.invoke` 는 대상이 던진 예외를
+  `InvocationTargetException` 으로 감싸므로 `ProxyDataSourceInterceptor` 가 그것을 벗겨 다시
+  던진다. 안 벗기면 호출자가 `SQLException` 대신 `UndeclaredThrowableException` 을 받고,
+  스프링과 하이버네이트의 예외 변환이 통째로 건너뛰어진다. 공개 프로젝트에서 실제로 겪었다
+  (`~/other/oss-contrib/query-counter-field-test/RESULTS-2026-08-27.md` 의 발견 6)
 
 ## 구조
 
@@ -24,6 +29,7 @@ config/
   AutoConfig                        조건부 자동 설정. @Bean 으로 명시
   NPlusOneSettingCheck              검사만 켜고 카운팅을 안 켠 구성을 경고. 검사를 켠 때만 로딩
   QueryCounterProperties            yml 프로퍼티. IDE 자동완성 메타데이터의 출처
+  QueryCounterSettings              프로퍼티 이름과 기본값의 단일 출처. AutoConfig 와 리스너가 함께 읽는다
   DataSourceProxyBeanPostProcessor  DataSource 를 프록시로 감쌈
 querycount/
   datasource/QueryCountListener     datasource-proxy 리스너. 여기서 기록이 시작된다
@@ -51,11 +57,18 @@ querycount/
 주입받으면 프로퍼티 빈이 너무 이르게 초기화되고 Spring이 경고를 낸다.
 `AutoConfig`에서 `Environment`로 값을 읽어 생성자에 넘긴다.
 
-### 애플리케이션 컨텍스트를 참조하지 않는다
+### 컨텍스트 로딩을 강제하지 않는다
 
 `TestContext.getApplicationContext()`를 부르면 컨텍스트 로딩이 강제된다. 모든 Spring
 테스트에서 도는 리스너에서는 받아들일 수 없다. ThreadLocal 정리는 활성 여부와 무관하게
 무해하므로 조건 없이 수행한다.
+
+**금지되는 것은 로딩을 강제하는 것이지 컨텍스트를 읽는 것 자체가 아니다.**
+`QueryCountTestExecutionListener.recoverSettingsIfNoQueryRan` 이 유일한 예외다. 쿼리가 0건이라
+설정이 기록 경로를 못 타고 온 경우에만, `hasApplicationContext()` 로 **이미 떠 있는 것을 확인한
+뒤에** 읽는다. 안 떠 있으면 그냥 둔다. 컨텍스트가 없다는 것은 DataSource 도 없다는 뜻이라
+보고할 것도 없다. 이 조건을 지키는지는 `ReportOnZeroQueryTest` 가 고정한다
+(`getApplicationContext()` 를 부르지 않는지 검증하는 테스트가 있다).
 
 활성 여부를 알려야 할 곳이 하나 있는데, 검증이 실패했고 기록된 쿼리가 0건일 때
 `QueryCountVerifier`가 안내를 덧붙이는 자리다. 판단에 필요한 정보가 이미 ThreadLocal에
@@ -128,7 +141,7 @@ querycount/
 ### 설정은 기록 경로를 타고 테스트 경계로 간다
 
 전역 N+1 검사가 이 제약을 정면으로 맞았다. 설정은 컨텍스트에 있는데 검사는 테스트 경계에서
-해야 하고, 리스너는 컨텍스트를 만질 수 없고 static 플래그는 위에 적힌 이유로 못 쓴다.
+해야 하고, 리스너는 컨텍스트 로딩을 강제할 수 없고 static 플래그는 위에 적힌 이유로 못 쓴다.
 
 그래서 모드를 **기록하는 쪽이 실어 나른다.** `AutoConfig`가 프로퍼티를 읽어
 `DataSourceProxyBeanPostProcessor`와 `QueryCountListener`에 넘기고, 그 리스너가 쿼리를 기록할
@@ -138,6 +151,10 @@ querycount/
 `clear()`가 쿼리와 모드를 함께 비우므로 테스트 사이에 남지 않는다. 컨텍스트가 여럿이라 모드가
 섞이는 경우도 문제가 없다. 활성화되지 않은 컨텍스트는 DataSource를 감싸지 않아 기록이 0건이고,
 기록이 없으면 검사할 것도 없다.
+
+**보고는 다르다.** 0건이라는 사실 자체가 사용자가 물은 답이라, 기록이 없어도 보고는 나가야 한다.
+그 한 경우만 리스너가 이미 떠 있는 컨텍스트에서 설정을 되살린다. 위의 "컨텍스트 로딩을 강제하지
+않는다" 를 함께 읽는다.
 
 **모드를 옮길 자리를 새로 만들 때 이 경로를 따른다.** 리스너에서 컨텍스트를 읽거나 static에
 담는 쪽으로 돌아가면 위의 두 실패를 다시 겪는다.
@@ -152,7 +169,7 @@ querycount/
 | `QueryCountListener` | `elapsedMs` 가 실행 단위 값인데 배치의 모든 쿼리에 같은 값이 붙는다 |
 | `QueryInfo` | 생성자가 테이블 이름을 항상 정규식으로 추출한다. 안 쓰는 경우에도 |
 | `QueryCountListener` | `queryTypeCache` 와 같은 성질로, 상한에 닿은 뒤에는 테스트 스레드 밖 기록을 버린다. 무한히 쌓이는 것은 막았지만 읽을 수도 없는 기록을 1만 개까지는 들고 있다 |
-| `QueryCountVerifier` | 229줄에 private 메서드 13개. 검사를 하나 더 추가하기 전에 검사 단위를 인터페이스로 뽑는 편이 낫다 |
+| `QueryCountVerifier` | 301줄에 private 메서드 24개. 검사를 하나 더 추가하기 전에 검사 단위를 인터페이스로 뽑는 편이 낫다 |
 | `QueryCounterAssertion` | 검증하지 않은 어서션을 static ThreadLocal 목록으로 들고 있다. 리스너가 비우지만 전역 상태가 하나 늘어난 것은 사실이다 |
 
 ## 작업 규칙
@@ -257,6 +274,14 @@ PR 본문에 배경과 판단을 적으면 이슈에 같은 내용을 한 번 �
 
 로컬 빌드는 **JDK 17**이다. `java.toolchain`이 17을 지정하고 CI 도 17로 돈다.
 
+**JDK 25 로는 빌드가 안 뜬다.** `toolchain` 이 17을 지정해도 Gradle 8.13 자체가 JDK 25 에서
+test 태스크를 못 만든다(`Could not create task of type 'Test'` / `Type T not present`).
+쉘 기본이 25면 앞에 붙여 준다. JDK 21 과 17 은 둘 다 된다.
+
+```sh
+JAVA_HOME=~/.sdkman/candidates/java/21.0.12-tem ./gradlew test
+```
+
 ```sh
 ./gradlew build
 ./gradlew test --tests '*AutoConfigTest*'
@@ -277,73 +302,11 @@ checkstyle 은 없다.
 
 ## 릴리스
 
-설치 좌표는 `io.github.jjh75607:query-counter:0.5.0` 이다. `0.1.0` 이하는 Central 에 없다.
-JitPack 으로 내던 시절의 것이고 2026-08-13 에 그 경로를 접었다. 근거는 태그 7개 중 JitPack 이
-빌드한 것이 둘뿐이었다는 것이다. JitPack 은 요청받을 때만 빌드하므로 나머지는 아무도 받아간
-적이 없다는 뜻이다. 쓰는 사람이 없는데 배포 경로가 둘이면 서명 설정과 문서와 검증이 모두
-두 벌이 된다.
+절차와 함정은 `docs/RELEASING.md` 에 있다. **릴리스할 때 그 파일을 먼저 연다.**
 
-절차는 이렇다.
-
-1. `build.gradle` 의 `version` 을 올리고 `CHANGELOG.md` 를 정리한다
-2. 태그와 GitHub 릴리스를 만든다. 제목은 태그와 정확히 같게 쓴다 (`v0.2.0`. `v.0.2.0` 처럼
-   점이 끼지 않게)
-3. `release.yml` 이 자동으로 돌아 서명한 아티팩트를 Central 에 올린다. 태그와
-   `build.gradle` 의 `version` 이 다르면 여기서 멈춘다. Central 은 한 번 올라간 버전을
-   덮어쓸 수 없어서 올리기 전에 걸러야 한다
-4. `https://central.sonatype.com/publishing/deployments` 에서 확인하고 Publish 를 누른다.
-   이걸 누르기 전에는 아무도 받을 수 없다
-5. `verify-release.yml` 을 태그를 넣어 수동 실행한다. 공개를 누른 뒤에 도는 것이라 자동
-   실행은 걸어두지 않았다. 명령으로는 `gh workflow run verify-release.yml -f tag=v0.5.0` 이다
-
-**Publish 를 누른 뒤 `repo1.maven.org` 에 퍼지기까지 몇 분에서 수십 분 걸린다.** 4번과 5번
-사이의 이 시차를 모르면 5번의 404 를 릴리스 실패로 읽는다. `0.4.0` 에서 실제로 그랬다.
-그래서 5번은 최대 15분까지 기다려 보고, 그래도 없으면 무엇을 확인해야 하는지 함께 낸다.
-
-**발행 검증은 두 층이다.** CI 의 `smoke` 잡이 매 변경에서 로컬 저장소로 낸 SNAPSHOT 을 소비자
-프로젝트가 받아 호출한다. `verify-release.yml` 은 릴리스 뒤에 Central 의 실물을 본다. 앞엣것이
-없던 동안 `0.2.0` 이 설치 불가 상태로 나갔다. **릴리스 뒤에만 도는 검증은 늦다.**
-
-**`build.gradle` 의 `version` 이 유일한 출처다.** 태그는 거기에 `v` 를 붙인 것이고,
-워크플로가 둘이 같은지 검사한다. Central 버전에는 `v` 가 없다.
-
-### 의존성 버전은 반드시 적는다
-
-`build.gradle` 의 `springBootFloor`, `springFrameworkFloor`, `junitFloor` 는 **발행물에
-그대로 실려 사용자에게 나가는 값**이다. 지원 하한인 Spring Boot 3.0.0 이 쓰는 버전이다.
-
-버전을 비워두고 BOM 으로 채우는 방식은 쓰지 않는다. 그 방식은 우리가 빌드할 때만 값을
-채우고 발행물에는 빈칸을 남긴다. 받는 쪽은 몇 번을 받을지 몰라 `Could not find
-org.springframework:spring-test:` 로 멈춘다. `0.2.0` 이하가 전부 이 상태로 나갔고
-아무도 설치할 수 없었다. 이슈 98 이다.
-
-하한이어야 하는 이유는, 사용자가 이미 더 높은 Spring Boot 를 쓰고 있으면 그쪽이 이겨야
-하기 때문이다. 우리가 빌드한 버전을 적으면 남의 프로젝트 버전을 끌어올린다.
-
-CI 가 `-PspringBootVersion` 으로 지원 범위를 검증하는 것은 `enforcedPlatform` 이 맡는다.
-`compileOnly`, `annotationProcessor`, `testImplementation` 에만 걸어서 발행물에 새지 않게
-했다. `io.spring.dependency-management` 플러그인으로는 이게 안 된다. 그 플러그인은 명시한
-버전을 덮어쓰지 못한다.
-
-### 서명
-
-Central 은 서명 없는 아티팩트를 받지 않는다. 서명 키는 저장소 시크릿 `SIGNING_KEY` 와
-`SIGNING_PASSWORD` 에, 포털 사용자 토큰은 `MAVEN_CENTRAL_USERNAME` 과
-`MAVEN_CENTRAL_PASSWORD` 에 있다.
-
-`signAllPublications()` 는 버전이 `-SNAPSHOT` 으로 끝나지 않으면 서명을 필수로 만든다.
-그래서 **서명 키 없이는 `publishToMavenLocal` 도 실패한다.** 로컬에서 발행을 시험하려면
-`-PsigningInMemoryKey` 와 `-PsigningInMemoryKeyPassword` 로 키를 넘긴다.
-
-`-Pversion=0.3.0-SNAPSHOT` 으로 서명을 건너뛰려는 시도는 통하지 않는다. `build.gradle` 이
-`version` 을 직접 대입하고 있어서 명령줄 프로퍼티가 덮이지 않는다.
-
-그래서 그 자리를 `-PpublishVersion` 으로 열어 두었다. `version = findProperty('publishVersion') ?: '0.5.0'`
-이고, SNAPSHOT 을 넘기면 `signMavenPublication` 이 SKIPPED 되어 키 없이
-`publishToMavenLocal` 이 된다. **소비자 스모크 테스트 전용이다.**
-
-**릴리스에는 쓰지 않는다.** `release.yml` 은 이 프로퍼티를 넘기지 않고 리터럴 기본값을 읽어
-태그와 대조하므로, 이걸로 발행하면 그 검사를 우회하게 된다. 리터럴이 여전히 유일한 출처다.
+거기에 있는 것: 배포 좌표와 절차 다섯 단계, `build.gradle` 의 `version` 이 유일한 출처라는 것,
+의존성 버전을 비워 두면 안 되는 이유(`0.2.0` 이 설치 불가로 나갔다), 서명 키와
+`-PpublishVersion`, Publish 를 누른 뒤 Central 전파까지의 시차.
 
 ## 하지 않을 것
 

@@ -5,8 +5,6 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
-import soon.springtestutil.querycount.NPlusOneCheck;
-import soon.springtestutil.querycount.QueryLimit;
 
 /**
  * query-counter 자동 설정입니다.
@@ -28,23 +26,11 @@ public class AutoConfig {
      */
     @Bean
     static DataSourceProxyBeanPostProcessor dataSourceProxyBeanPostProcessor(Environment environment) {
-        boolean loggingEnabled = environment
-            .getProperty("query-counter.logging.enabled", Boolean.class, false);
-        boolean nPlusOneEnabled = environment
-            .getProperty("query-counter.n-plus-one.enabled", Boolean.class, false);
-        boolean nPlusOneFail = environment
-            .getProperty("query-counter.n-plus-one.fail", Boolean.class, false);
-        boolean collectOtherThreads = environment
-            .getProperty("query-counter.other-threads.enabled", Boolean.class, false);
-        int maxPerTest = environment
-            .getProperty("query-counter.max-queries.per-test", Integer.class, 0);
-        boolean reportCounts = environment
-            .getProperty("query-counter.max-queries.report", Boolean.class, false);
         return new DataSourceProxyBeanPostProcessor(
-            loggingEnabled,
-            NPlusOneCheck.of(nPlusOneEnabled, nPlusOneFail),
-            collectOtherThreads,
-            QueryLimit.of(maxPerTest, reportCounts)
+            QueryCounterSettings.loggingEnabled(environment),
+            QueryCounterSettings.nPlusOneCheck(environment),
+            QueryCounterSettings.collectOtherThreads(environment),
+            QueryCounterSettings.queryLimit(environment)
         );
     }
 
