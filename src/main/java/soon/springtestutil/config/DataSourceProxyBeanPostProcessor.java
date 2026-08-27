@@ -17,6 +17,7 @@ import soon.springtestutil.querycount.QueryLimit;
 import soon.springtestutil.querycount.datasource.QueryCountListener;
 
 import javax.sql.DataSource;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 
 /**
@@ -183,7 +184,14 @@ public class DataSourceProxyBeanPostProcessor implements BeanPostProcessor, Prio
             );
             if (proxyMethod != null) {
                 // 프록시 객체에 메서드가 존재하면 해당 메서드를 호출
-                return proxyMethod.invoke(dataSource, invocation.getArguments());
+                try {
+                    return proxyMethod.invoke(dataSource, invocation.getArguments());
+                } catch (InvocationTargetException e) {
+                    // Method.invoke 는 대상이 던진 예외를 감싼다. 벗기지 않으면 호출자가
+                    // SQLException 대신 UndeclaredThrowableException 을 받고,
+                    // 스프링과 하이버네이트의 예외 변환이 통째로 건너뛰어진다.
+                    throw e.getCause() != null ? e.getCause() : e;
+                }
             }
             return invocation.proceed();
         }

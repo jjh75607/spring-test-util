@@ -1,10 +1,12 @@
 package soon.springtestutil.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 
 import java.sql.Connection;
+import java.sql.SQLException;
 import javax.sql.DataSource;
 import net.ttddyy.dsproxy.support.ProxyDataSource;
 import org.junit.jupiter.api.BeforeEach;
@@ -105,6 +107,22 @@ class DataSourceProxyBeanPostProcessorTest {
             .isNotSameAs(mockConnection);
 
         then(mockDataSource).should().getConnection();
+    }
+
+    @DisplayName("감싼 DataSource 가 던진 예외는 타입 그대로 나간다.")
+    @Test
+    void exceptionFromDataSourceKeepsItsType() throws SQLException {
+        // given
+        SQLException thrown = new SQLException("connection refused");
+        given(mockDataSource.getConnection()).willThrow(thrown);
+        DataSource proxied = (DataSource) processor.postProcessAfterInitialization(
+            mockDataSource, "dataSource");
+
+        // when, then
+        // Method.invoke 가 감싼 InvocationTargetException 을 벗기지 않으면 호출자는
+        // SQLException 을 못 받는다. 스프링과 하이버네이트의 예외 변환이 그때 통째로 건너뛰어진다.
+        assertThatThrownBy(proxied::getConnection)
+            .isSameAs(thrown);
     }
 
 }
