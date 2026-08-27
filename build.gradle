@@ -9,7 +9,7 @@ group = 'io.github.jjh75607'
 
 // CI 의 소비자 스모크 테스트가 -PpublishVersion 으로 SNAPSHOT 을 발행한다.
 // SNAPSHOT 은 서명을 건너뛰므로 키 없이 로컬 저장소로 낼 수 있다.
-version = findProperty('publishVersion') ?: '0.5.0'
+version = findProperty('publishVersion') ?: '0.6.0'
 
 java {
     toolchain {
