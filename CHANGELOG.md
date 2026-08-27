@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-27
+
 ### Fixed
 
 - **감싼 DataSource 가 던진 예외가 원래 타입 그대로 나갑니다.** 종전에는 `SQLException` 이
