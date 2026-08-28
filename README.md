@@ -540,9 +540,24 @@ It is a net, not a full sweep. Turning it on does not mean every N+1 in the suit
 | An association shared by every row | The persistence context reads it once and serves the rest from memory, so no repeat reaches the database |
 | Queries executed on another thread | Not recorded unless `query-counter.other-threads.enabled` is on. A property of the counting itself, not of this check |
 
-The other direction happens too. A test that reads in a loop on purpose, a parameterized test running
-the same query with different values, and paging through results are all reported like any other
-finding. That is what `fail: false` is for while you work through the list.
+The other direction happens too. The rule is "same SELECT, different parameter values", and three
+kinds of test produce exactly that without any N+1 in the code. They are reported like any other
+finding, which is what `fail: false` is for while you work through the list.
+
+| Reported, but not an N+1 | What the test does | What the finding looks like |
+|---|---|---|
+| Positive and negative case in one test | `findByLastName("Davis")` then `findByLastName("Daviss")`, asserting two rows and then none | The same SELECT, 2 executions, parameters differ only by the literal the test typed |
+| Paging or cursor walk | Reads the first page, then the next page with the cursor from the first | The same SELECT with the page offset or cursor value as the only difference |
+| The same operation called several times (lifecycle) | Create, update, then delete the same record, each step re-reading it by id | The same SELECT by id, once per step, with writes in between |
+
+How often this happens depends on how the suite is written, not on the project. Measured on four
+public suites with this check turned on: a suite of repository and service tests that read collections
+and touch associations had 4 such findings out of 46 (the rest were real N+1s); a suite of service
+scenario tests had 8 of 9; a suite of repository tests that check the positive and negative case and
+page through results had 25 of 25. Neither the execution count nor whether the repeat is the first
+query of the test separates these from the real ones, so the check does not try to. Read the
+finding against the test: an N+1 repeats a query once per row that an earlier query returned, and
+the parameter values are those rows' ids.
 
 Where an exact number matters, an assertion written by hand still says it better than this check
 does.
